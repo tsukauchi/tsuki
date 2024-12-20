@@ -1,0 +1,670 @@
+from flask import Flask
+from threading import Thread
+import time
+app = Flask('')
+@app.route('/')
+def home():
+    return "I'm alive!"
+def run():
+    app.run(host='0.0.0.0', port=8080)
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+keep_alive()
+
+    
+import time
+import requests
+import json
+import os
+from uuid import uuid4
+from datetime import datetime, timedelta
+
+
+# Константы
+
+access_token = None
+
+LOGIN_URL = "https://play.prod.iziyo.xyz/api/v1.0/identity/login/refresh/"
+
+BALANCE_URL = "https://play.prod.iziyo.xyz/api/v1.0/dinero/balance/"
+
+BALANCE_LIMIT = "https://play.prod.iziyo.xyz./api/v1.0/bonuses/balance-limit/"
+
+EARN_URL = "https://play.prod.iziyo.xyz/api/v1.0/sync/current/"
+
+SYNC_URL = "https://play.prod.iziyo.xyz/api/v1.0/sync/"
+
+SESSION_URL = "https://play.prod.iziyo.xyz/api/v1.0/dinero/events/sessions/"
+
+REQUEST_OTP_URL = "https://api.izi.me./user/sign-up/request-otp"
+
+CONFIRM_OTP_URL = "https://api.izi.me./user/sign-up/confirm-otp"
+
+SOCIAL_LOGIN_URL = "https://play.prod.iziyo.xyz/api/v1.0/identity/login/social/"
+
+PHONE_FORMATS_URL = "https://api.izi.me./country-data/phone-formats"
+
+PROFILE_URL = "https://play.prod.iziyo.xyz/api/v1.0/profile/"
+
+
+
+SDK_AUTH_TOKEN = "4zkp2cX2qwYdToZTSwCgtFl84gRzahT3"
+
+DEVICE_MODEL = "POCO M2102J20SG aarch64"
+
+OS_VERSION = "Version 13"
+
+CLIENT_NAME = "Android"
+
+CLIENT_VERSION = "1.11.0.0(release)"
+
+USER_AGENT = "okhttp/4.9.3"
+
+DEVICE_ID = "Android-" + str(uuid4())
+
+TOKEN_FILE = "tokens.json"
+
+timestamp = ''
+
+
+
+DEFAULT_HEADERS = {
+
+    "sdk-auth-token": SDK_AUTH_TOKEN,
+
+    "x-device-model": DEVICE_MODEL,
+
+    "x-device-os-version": OS_VERSION,
+
+    "x-device-client-name": CLIENT_NAME,
+
+    "x-device-client-version": CLIENT_VERSION,
+
+    "content-type": "application/json; charset=UTF-8",
+
+    "accept-encoding": "gzip",
+
+    "user-agent": USER_AGENT,
+
+}
+
+
+
+def load_tokens():
+
+    if os.path.exists(TOKEN_FILE):
+
+        with open(TOKEN_FILE, "r") as f:
+
+            data = json.load(f)
+
+            return data.get("access_token"), data.get("refresh_token"), data.get("expires_at")
+
+    return None, None, None
+
+
+
+def save_tokens(access_token, refresh_token, expires_in):
+
+    expires_at = datetime.now() + timedelta(seconds=expires_in)
+
+    with open(TOKEN_FILE, "w") as f:
+
+        json.dump({"access_token": access_token, "refresh_token": refresh_token, "expires_at": expires_at.isoformat()}, f)
+
+
+
+def refresh_token():
+
+    global access_token
+
+    headers = DEFAULT_HEADERS.copy()
+
+    _, current_refresh_token, _ = load_tokens()
+
+    if not current_refresh_token:
+
+        raise Exception("Refresh token not found. Please provide a valid refresh token.")
+
+
+
+    data = {
+
+        "device_id": DEVICE_ID,
+
+        "refresh_token": current_refresh_token
+
+    }
+
+    response = requests.post(LOGIN_URL, headers=headers, json=data)
+
+
+
+    response_data = response.json()
+
+
+
+    if "access_token" not in response_data:
+
+        raise Exception("Failed to refresh access token. Please check the API response.")
+
+
+
+    refresh_token = response_data.get("refresh_token")
+
+    access_token = response_data.get("access_token")
+
+    expires_in = response_data.get("expires_in")
+
+
+
+    save_tokens(access_token, refresh_token, expires_in)
+
+    return access_token
+
+
+
+def get_country_phone_formats():
+
+    response = requests.get(PHONE_FORMATS_URL)
+
+    if response.status_code != 200:
+
+        raise Exception(f"Ошибка получения форматов телефонов: {response.status_code}")
+
+    return response.json()
+
+
+
+def normalize_phone_number(phone_number):
+
+    return ''.join(filter(str.isdigit, phone_number))
+
+
+
+def get_country_code(phone_number, country_data):
+
+    normalized_phone = normalize_phone_number(phone_number)
+
+    for country in country_data:
+
+        call_code = country["callCode"]
+
+        mask = country["mask"].replace("[", "").replace("]", "").replace(" ", "")
+
+        expected_length = country["length"] + len(call_code)
+
+
+
+        if normalized_phone.startswith(call_code) and len(normalized_phone) == expected_length:
+
+            return country["code"]
+
+    raise ValueError("Невозможно определить код страны для данного номера телефона.")
+
+
+
+def request_otp(phone_number):
+
+    phone_number = phone_number.lstrip('+')
+
+
+
+    country_data = get_country_phone_formats()
+
+    country_code = get_country_code(phone_number, country_data)
+
+
+
+    headers = DEFAULT_HEADERS.copy()
+
+    data = {
+
+        "phone": phone_number,
+
+        "language": "RU",
+
+        "countryCode": country_code
+
+    }
+
+    response = requests.post(REQUEST_OTP_URL, headers=headers, json=data)
+
+
+
+    try:
+
+        response.raise_for_status() # Проверка на HTTP ошибки
+
+
+
+        # Если ответ не является JSON, то это может быть `true`
+
+        if response.text.strip().lower() == 'true':
+
+            print("Запрос на отправку SMS-кода выполнен. Проверьте ваш телефон.")
+
+            return True
+
+
+
+        response_data = response.json() # Попытка декодирования ответа как JSON
+
+
+
+        # Если ответ - это словарь, проверяем код ошибки
+
+        if isinstance(response_data, dict) and response_data.get('code') == '212':
+
+            error_message = response_data['text']
+
+            print(f"Ошибка запроса OTP: {error_message}")
+
+            return False
+
+
+
+    except requests.HTTPError as http_err:
+
+        print(f"HTTP ошибка: {http_err}")
+
+        print("Ответ от сервера:", response.text)
+
+        return False
+
+    except json.JSONDecodeError as json_err:
+
+        print(f"Ошибка декодирования JSON: {json_err}")
+
+        print("Ответ от сервера:", response.text)
+
+        return False
+
+    except Exception as err:
+
+        print(f"Неизвестная ошибка: {err}")
+
+        print("Ответ от сервера:", response.text)
+
+        return False
+
+
+
+    print("Запрос на отправку SMS-кода выполнен. Проверьте ваш телефон.")
+
+    return True
+
+
+
+def confirm_otp(phone_number, otp_code):
+
+    headers = DEFAULT_HEADERS.copy()
+
+    data = {
+
+        "username": phone_number,
+
+        "password": otp_code
+
+    }
+
+    response = requests.post(CONFIRM_OTP_URL, headers=headers, json=data)
+
+    if response.status_code != 200:
+
+        raise Exception(f"Ошибка подтверждения OTP: {response.status_code}")
+
+    response_data = response.json()
+
+    access_token = response_data["access_token"]
+
+    refresh_token = response_data["refresh_token"]
+
+    expires_in = response_data["expires_in"]
+
+    save_tokens(access_token, refresh_token, expires_in)
+
+    print("Авторизация завершена успешно.")
+
+    return access_token
+
+
+
+def social_login(access_token):
+
+    headers = DEFAULT_HEADERS.copy()
+
+    headers["authorization"] = f"bearer {access_token}"
+
+
+
+    data = {
+
+        "code": access_token,
+
+        "device_id": DEVICE_ID,
+
+        "provider": "izi"
+
+    }
+
+
+
+    response = requests.post(SOCIAL_LOGIN_URL, headers=headers, json=data)
+
+
+
+    # Обрабатываем коды состояния ответа
+
+    if response.status_code not in [200, 201, 202, 204, 205, 206]:
+
+        print(f"Ошибка социального входа: {response.status_code}")
+
+        print("Ответ от сервера:", response.text)
+
+        raise Exception(f"Ошибка социального входа: {response.status_code}")
+
+
+
+    response_data = response.json()
+
+    access_token = response_data["access_token"]
+
+    refresh_token = response_data["refresh_token"]
+
+    expires_in = response_data["expires_in"]
+
+    save_tokens(access_token, refresh_token, expires_in)
+
+    print("Социальный вход выполнен успешно.")
+
+    return access_token
+
+
+
+def get_balance(access_token):
+
+    headers = DEFAULT_HEADERS.copy()
+
+    headers["authorization"] = f"bearer {access_token}"
+
+    response = requests.get(BALANCE_URL, headers=headers)
+
+
+
+    if response.status_code == 401:
+
+        access_token = refresh_token()
+
+        headers["authorization"] = f"bearer {access_token}"
+
+        response = requests.get(BALANCE_URL, headers=headers)
+
+
+
+    balance_data = response.json()
+
+    return balance_data
+
+
+
+def earn_points(access_token):
+
+    global timestamp
+
+    headers = DEFAULT_HEADERS.copy()
+
+    headers["authorization"] = f"bearer {access_token}"
+
+
+
+
+
+    if not timestamp:
+
+        print("Failed to retrieve timestamp for earning points.")
+
+        print(response_data)
+
+        return
+
+
+
+    sync_response = requests.get(f"{SYNC_URL}?since={timestamp}", headers=headers, timeout=120)
+
+
+
+    if sync_response.status_code == 401:
+
+        access_token = refresh_token()
+
+        headers["authorization"] = f"bearer {access_token}"
+
+        return#sync_response = requests.get(f"{SYNC_URL}?since={timestamp}", headers=headers)
+
+
+
+    get_session_data(access_token)
+
+
+
+def get_session_data(access_token):
+
+    headers = DEFAULT_HEADERS.copy()
+
+    headers["authorization"] = f"bearer {access_token}"
+
+    session_data = {"duration_in_seconds": 60}
+
+    session_response = requests.post(SESSION_URL, headers=headers, json=session_data)
+
+
+
+    if session_response.status_code == 401:
+
+        print("Access token expired or invalid, refreshing...")
+
+        access_token = refresh_token()
+
+        headers["authorization"] = f"bearer {access_token}"
+
+        session_data = {"duration_in_seconds": 60}
+
+        session_response = requests.post(SESSION_URL, headers=headers, json=session_data)
+
+
+
+def get_profile_data(access_token):
+
+    headers = DEFAULT_HEADERS.copy()
+
+    headers["authorization"] = f"bearer {access_token}"
+
+    response = requests.get(PROFILE_URL, headers=headers)
+
+
+
+    if response.status_code == 401:
+
+        access_token = refresh_token()
+
+        headers["authorization"] = f"bearer {access_token}"
+
+        response = requests.get(PROFILE_URL, headers=headers)
+
+
+
+    if response.status_code != 200:
+
+        raise Exception(f"Ошибка получения профиля: {response.status_code}")
+
+
+
+    profile_data = response.json()
+
+    return profile_data
+
+
+
+def auth():
+
+    phone_number = input("Введите номер телефона: ").lstrip('+')
+
+    otp_sent = request_otp(phone_number)
+
+
+
+    if otp_sent:
+
+        otp_code = input("Введите код из SMS: ")
+
+        access_token = confirm_otp(phone_number, otp_code)
+
+        social_login(access_token)
+
+        return True
+
+    return False
+
+
+
+def main():
+
+    global timestamp, access_token
+
+    access_token = list(load_tokens())[0]
+
+
+
+    if not access_token:
+
+        auth()
+
+        access_token = list(load_tokens())[0]
+
+    current_balance = 0
+
+    try:
+
+        profile_data = get_profile_data(access_token)
+
+        balance = profile_data.get("balance", 0)
+
+        current_balance = profile_data.get("current_day_balance", 0)
+
+        print(f'Профиль: {profile_data.get("display_name", "Неизвестно")}')
+
+        print(f"Баланс за день: {current_balance} всего: {balance}")
+
+    except Exception as e:
+
+        print(f"Ошибка при проверке профиля: {e}")
+
+        print("Переход к процессу авторизации.")
+
+        auth()
+
+    try:
+
+        step = 0
+
+        headers = DEFAULT_HEADERS.copy()
+
+        headers["authorization"] = f"bearer {access_token}"
+
+        response = requests.get(BALANCE_LIMIT, headers=headers)
+
+        response_data = response.json()
+
+        max_points = response_data.get("session_daily_limit", 200)
+
+
+
+        response = requests.get(EARN_URL, headers=headers)
+
+        response_data = response.json()
+
+        timestamp = response_data.get("timestamp", timestamp)
+
+    except Exception as e:
+
+        print(f"Error: {e}")
+
+
+
+    while True:
+
+        try:
+
+            step = step + 1
+
+            if current_balance >= max_points:
+
+                print("Сплю сутки")
+
+                time.sleep(60 * 60 * 24)
+
+                step = 0
+
+            earn_points(access_token)
+
+            balance_data = get_balance(access_token)
+
+            current_balance = balance_data.get("current_day_balance", 0)
+
+            print(f'Баланс за день: {current_balance} всего: {balance_data.get("balance", 0)}')
+
+
+
+            if step >= 8:
+
+                step = 0
+
+                print('Пауза на 10 сек')
+
+                time.sleep(10)
+
+                headers = DEFAULT_HEADERS.copy()
+
+                headers["authorization"] = f"bearer {access_token}"
+
+                response = requests.get(EARN_URL, headers=headers)
+
+                response_data = response.json()
+
+                timestamp = response_data.get("timestamp", timestamp)
+
+                if response_data.get("error"):
+
+                    time.sleep(10)
+
+                    print("[Access token expired or invalid, refreshing...")
+
+                    access_token = refresh_token()
+
+                    response_data = response.json()
+
+                    timestamp = response_data.get("timestamp", timestamp)
+
+
+
+        except Exception as e:
+
+            print(f"Error: {e}")
+
+            time.sleep(10)
+
+
+
+if __name__ == "__main__":
+
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        print("\nProcess interrupted by user. Exiting...")
+
